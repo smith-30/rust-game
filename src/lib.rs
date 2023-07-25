@@ -30,13 +30,41 @@ pub fn main_js() -> Result<(), JsValue> {
         .dyn_into::<web_sys::CanvasRenderingContext2d>()
         .unwrap();
 
-    sierpinski(
-        &context,
-        [(300.0, 0.0), (0.0, 600.0), (600.0, 600.0)],
-        (0, 255, 0),
-        5,
-    );
+    // spawn_localを呼び出す際には、引数として asyncの付いたブロックを渡す必要がある
+    // このブロックに move を付けているのは、ブロック 内部で参照している変数束縛のすべての所有権をこのブロックに与えるためだ。
+    // future の考え方。https://blog.tiqwab.com/2022/03/26/rust-future.html
+    // トレイトが用意されていて、ランタイムはライブラリとして提供されているものを使うっていうのが面白い
+    wasm_bindgen_futures::spawn_local(async move {
+        // oneshot チャネルは、レシーバが Futureトレイト を実装するチャネルで、メッセージを受け取るのを awaitで待つことができる。
+        // onloadコールバックがそ のチャネルにメッセージを送るように設定すれば、レシーバで await することで、画像がロードされるまで実行を停止することができる。
+        let (success_tx, success_rx) = futures::channel::oneshot::channel::<()>();
+        let image = web_sys::HtmlImageElement::new().unwrap();
+        // 画像のソースを指定した直後に画像を表示することはできないのだ。
+        // 画像がまだロードできていないからだ。
+        // ロードを待つには、HtmlImageElementの onloadコールバックを使う必要がある。
 
+        let callback = Closure::once(move || {
+            success_tx.send(());
+        });
+        // callbackに対して as_refを呼び出している。
+        // この関数は生の JsValueを返すので、これに対し て unchecked_refを呼び出して &Functionオブジェクトに変換する。
+        // 引数は JavaScript では nullである可 能性があるので、このオブジェクトを Some でラップする。
+        // Todo: as_ref() で返ってくるのは JsValue で、unchecked_ref で Function になるの謎。。
+        //       呪文ぽい。https://rustwasm.github.io/wasm-bindgen/examples/closures.html
+        image.set_onload(Some(callback.as_ref().unchecked_ref()));
+        // 数行後に↑関数が終了して callback がスコープから外れたときにクロージャが破壊され、console err になる
+
+        image.set_src("Idle (1).png");
+        success_rx.await;
+        context.draw_image_with_html_image_element(&image, 0.0, 0.0);
+
+        sierpinski(
+            &context,
+            [(300.0, 0.0), (0.0, 600.0), (600.0, 600.0)],
+            (0, 255, 0),
+            5,
+        );
+    });
     Ok(())
 }
 
@@ -47,8 +75,6 @@ fn draw_triangle(
 ) {
     let color_str = format!("rgb({}, {}, {})", color.0, color.1, color.2);
     context.set_fill_style(&wasm_bindgen::JsValue::from_str(&color_str));
-
-    console::log_1(&JsValue::from_str(&color_str));
 
     let [top, left, right] = points;
     context.move_to(top.0, top.1);
