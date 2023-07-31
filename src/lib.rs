@@ -1,11 +1,45 @@
 use rand::prelude::*;
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Mutex;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::console;
 
+// JSON のデシリアライズのターゲットとして Sheetを使えるようにする
+#[derive(Deserialize)]
+struct Sheet {
+    frames: HashMap<String, Cell>,
+}
+
+#[derive(Deserialize)]
+struct Rect {
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+}
+#[derive(Deserialize)]
+struct Cell {
+    frame: Rect,
+}
+
+// [重要]
+// JsValue は JavaScript から直接渡される値すべてを表す型だ。
+// Rust のコードでは一般に、この型のオブ ジェクトを特定の Rust 型に変換して使用する。
+
 // unwrap(https://doc.rust-jp.rs/rust-by-example-ja/error/option_unwrap.html)
 // `unwrap` returns a `panic` when it receives a `None`.
 // `unwrap`を使用すると値が`None`だった際に`panic`を返します。
+
+async fn fetch_json(json_path: &str) -> Result<JsValue, JsValue> {
+    let window = web_sys::window().unwrap();
+    let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(json_path)).await?;
+    // JavaScript の動的型付けされた値を、Rust の静的型付けされた値に変換する
+    let resp: web_sys::Response = resp_value.dyn_into()?;
+    wasm_bindgen_futures::JsFuture::from(resp.json()?).await
+}
 
 // This is like the `main` function, except for JavaScript.
 #[wasm_bindgen(start)]
@@ -37,14 +71,26 @@ pub fn main_js() -> Result<(), JsValue> {
     wasm_bindgen_futures::spawn_local(async move {
         // oneshot チャネルは、レシーバが Futureトレイト を実装するチャネルで、メッセージを受け取るのを awaitで待つことができる。
         // onloadコールバックがそ のチャネルにメッセージを送るように設定すれば、レシーバで await することで、画像がロードされるまで実行を停止することができる。
-        let (success_tx, success_rx) = futures::channel::oneshot::channel::<()>();
+        let (success_tx, success_rx) = futures::channel::oneshot::channel::<Result<(), JsValue>>();
+        let success_tx = Rc::new(Mutex::new(Some(success_tx)));
+        let error_tx = Rc::clone(&success_tx);
+
         let image = web_sys::HtmlImageElement::new().unwrap();
-        // 画像のソースを指定した直後に画像を表示することはできないのだ。
-        // 画像がまだロードできていないからだ。
+        // 画像のソースを指定した直後に画像を表示することはできない。
+        // 画像がまだロードできていないから。
         // ロードを待つには、HtmlImageElementの onloadコールバックを使う必要がある。
 
+        // Mutex の中身を外に移動することなく、中にある Sender にアクセスするために Option<T> 型を使う.
+        // 同じ Mutexを別のスレッドがアクセスすると、Noneが返されるので適切に処 理することができる。
         let callback = Closure::once(move || {
-            success_tx.send(());
+            if let Some(success_tx) = success_tx.lock().ok().and_then(|mut opt| opt.take()) {
+                success_tx.send(Ok(()));
+            };
+        });
+        let error_callback = Closure::once(move |err| {
+            if let Some(error_tx) = error_tx.lock().ok().and_then(|mut opt| opt.take()) {
+                error_tx.send(Err(err));
+            }
         });
         // callbackに対して as_refを呼び出している。
         // この関数は生の JsValueを返すので、これに対し て unchecked_refを呼び出して &Functionオブジェクトに変換する。
@@ -53,6 +99,8 @@ pub fn main_js() -> Result<(), JsValue> {
         //       呪文ぽい。https://rustwasm.github.io/wasm-bindgen/examples/closures.html
         image.set_onload(Some(callback.as_ref().unchecked_ref()));
         // 数行後に↑関数が終了して callback がスコープから外れたときにクロージャが破壊され、console err になる
+
+        image.set_onerror(Some(error_callback.as_ref().unchecked_ref()));
 
         image.set_src("Idle (1).png");
         success_rx.await;
@@ -63,6 +111,62 @@ pub fn main_js() -> Result<(), JsValue> {
             [(300.0, 0.0), (0.0, 600.0), (600.0, 600.0)],
             (0, 255, 0),
             5,
+        );
+
+        let json = fetch_json("rhb.json")
+            .await
+            .expect("Could not fetch rhb.json");
+
+        let sheet: Sheet = json
+            .into_serde()
+            .expect("Could not convert rhb.json into a Sheet structure");
+
+        // Rust では let 文を使うと、その変数の以前のバージョンを隠して新しく束縛を作り直すので、変数名を変更する必要はない。
+        let (success_tx, success_rx) = futures::channel::oneshot::channel::<Result<(), JsValue>>();
+        let success_tx = Rc::new(Mutex::new(Some(success_tx)));
+        let error_tx = Rc::clone(&success_tx);
+
+        let image = web_sys::HtmlImageElement::new().unwrap();
+        // 画像のソースを指定した直後に画像を表示することはできない。
+        // 画像がまだロードできていないから。
+        // ロードを待つには、HtmlImageElementの onloadコールバックを使う必要がある。
+
+        // Mutex の中身を外に移動することなく、中にある Sender にアクセスするために Option<T> 型を使う.
+        // 同じ Mutexを別のスレッドがアクセスすると、Noneが返されるので適切に処 理することができる。
+        let callback = Closure::once(move || {
+            if let Some(success_tx) = success_tx.lock().ok().and_then(|mut opt| opt.take()) {
+                success_tx.send(Ok(()));
+            };
+        });
+        let error_callback = Closure::once(move |err| {
+            if let Some(error_tx) = error_tx.lock().ok().and_then(|mut opt| opt.take()) {
+                error_tx.send(Err(err));
+            }
+        });
+        // callbackに対して as_refを呼び出している。
+        // この関数は生の JsValueを返すので、これに対し て unchecked_refを呼び出して &Functionオブジェクトに変換する。
+        // 引数は JavaScript では nullである可 能性があるので、このオブジェクトを Some でラップする。
+        // Todo: as_ref() で返ってくるのは JsValue で、unchecked_ref で Function になるの謎。。
+        //       呪文ぽい。https://rustwasm.github.io/wasm-bindgen/examples/closures.html
+        image.set_onload(Some(callback.as_ref().unchecked_ref()));
+        // 数行後に↑関数が終了して callback がスコープから外れたときにクロージャが破壊され、console err になる
+
+        image.set_onerror(Some(error_callback.as_ref().unchecked_ref()));
+
+        image.set_src("rhb.png");
+        success_rx.await;
+
+        let sprite = sheet.frames.get("Run (1).png").expect("Cell not found");
+        context.draw_image_with_html_image_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+            &image,
+            sprite.frame.x.into(),
+            sprite.frame.y.into(),
+            sprite.frame.w.into(),
+            sprite.frame.h.into(),
+            300.0,
+            300.0,
+            sprite.frame.w.into(),
+            sprite.frame.h.into(),
         );
     });
     Ok(())
