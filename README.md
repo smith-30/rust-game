@@ -46,3 +46,21 @@ npm test -- --safari
 * The `static` folder contains any files that you want copied as-is into the final build. It contains an `index.html` file which loads the `index.js` file.
 
 * The `tests` folder contains your Rust unit tests.
+
+
+## Architecture
+
+Game
+↓
+Engine
+↓
+Browser
+
+各レイヤは、同じレイヤか、一弾下のレイヤのものしか使えないというルール
+
+Engine -> ゲームの各部が共有して使用するツール
+ex. GameLoop 構造体
+
+Game -> 実際のゲームロジック
+
+Browser -> ブラウザ固有の関数などを扱う。ブラウザとの I/F

@@ -1,11 +1,12 @@
-use rand::prelude::*;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Mutex;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::console;
+
+#[macro_use]
+mod browser;
 
 // JSON のデシリアライズのターゲットとして Sheetを使えるようにする
 #[derive(Deserialize)]
@@ -33,44 +34,29 @@ struct Cell {
 // `unwrap` returns a `panic` when it receives a `None`.
 // `unwrap`を使用すると値が`None`だった際に`panic`を返します。
 
-async fn fetch_json(json_path: &str) -> Result<JsValue, JsValue> {
-    let window = web_sys::window().unwrap();
-    let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(json_path)).await?;
-    // JavaScript の動的型付けされた値を、Rust の静的型付けされた値に変換する
-    let resp: web_sys::Response = resp_value.dyn_into()?;
-    wasm_bindgen_futures::JsFuture::from(resp.json()?).await
-}
-
 // This is like the `main` function, except for JavaScript.
 #[wasm_bindgen(start)]
 pub fn main_js() -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
 
-    let window = web_sys::window().unwrap();
-    let document = window.document().unwrap();
+    let window = browser::window().expect("No Window Found");
+    let document = browser::document().expect("No Document Found");
     let canvas: web_sys::HtmlCanvasElement = document
         .get_element_by_id("canvas")
         .unwrap()
         .dyn_into::<web_sys::HtmlCanvasElement>() // get_element_by_id　で取得する Element を cast しないといけない。返り値が、Option<Element> のため
         .unwrap();
 
-    let context = canvas
-        .get_context("2d")
-        .unwrap()
-        .unwrap()
-        .dyn_into::<web_sys::CanvasRenderingContext2d>()
-        .unwrap();
+    let context = browser::context().expect("Could not get browser context");
 
     // spawn_localを呼び出す際には、引数として asyncの付いたブロックを渡す必要がある
     // このブロックに move を付けているのは、ブロック 内部で参照している変数束縛のすべての所有権をこのブロックに与えるためだ。
     // future の考え方。https://blog.tiqwab.com/2022/03/26/rust-future.html
     // トレイトが用意されていて、ランタイムはライブラリとして提供されているものを使うっていうのが面白い
-    wasm_bindgen_futures::spawn_local(async move {
-        let json = fetch_json("rhb.json")
+    browser::spawn_local(async move {
+        let sheet: Sheet = browser::fetch_json("rhb.json")
             .await
-            .expect("Could not fetch rhb.json");
-
-        let sheet: Sheet = json
+            .expect("Could not fetch rhb.json")
             .into_serde()
             .expect("Could not convert rhb.json into a Sheet structure");
 
@@ -132,10 +118,12 @@ pub fn main_js() -> Result<(), JsValue> {
         }) as Box<dyn FnMut()>);
 
         // 50ms ごとに interval_callback を呼び出す
-        window.set_interval_with_callback_and_timeout_and_arguments_0(
-            interval_callback.as_ref().unchecked_ref(),
-            50,
-        );
+        browser::window()
+            .unwrap()
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                interval_callback.as_ref().unchecked_ref(),
+                50,
+            );
 
         // このフューチャのスコープから 離れる際に Rust がクロージャを破棄しないようになる
         interval_callback.forget();
