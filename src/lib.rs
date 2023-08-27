@@ -7,6 +7,7 @@ use wasm_bindgen::JsCast;
 
 #[macro_use]
 mod browser;
+mod engine;
 
 // JSON のデシリアライズのターゲットとして Sheetを使えるようにする
 #[derive(Deserialize)]
@@ -65,7 +66,11 @@ pub fn main_js() -> Result<(), JsValue> {
         let success_tx = Rc::new(Mutex::new(Some(success_tx)));
         let error_tx = Rc::clone(&success_tx);
 
-        let image = web_sys::HtmlImageElement::new().unwrap();
+        let image = engine::load_image("rhb.png")
+            .await
+            .expect("Could not load rhb.png");
+
+        // let image = web_sys::HtmlImageElement::new().unwrap();
         // 画像のソースを指定した直後に画像を表示することはできない。
         // 画像がまだロードできていないから。
         // ロードを待つには、HtmlImageElementの onloadコールバックを使う必要がある。
